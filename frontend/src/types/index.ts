@@ -65,6 +65,23 @@ export interface Schedule {
   createdAt: string;
 }
 
+export interface WeeklySchedule {
+  id: string;
+  counselorId: string;
+  weekday: number; // 0=周日 ... 6=周六
+  startTime: string;
+  endTime: string;
+  createdAt: string;
+}
+
+export interface DayOff {
+  id: string;
+  counselorId: string;
+  date: string;
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface Appointment {
   id: string;
   clientId: string;

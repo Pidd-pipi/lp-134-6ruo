@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../config/prisma.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.middleware.js';
 import { sendInternalError, sendValidationError } from '../utils/httpResponses.js';
+import { isSlotInPast } from '../services/schedule.service.js';
 
 const router = Router();
 
@@ -11,6 +12,13 @@ const createAppointmentSchema = z.object({
   title: z.string().min(1).max(100),
   description: z.string().optional()
 });
+
+class SlotTakenError extends Error {
+  constructor() {
+    super('该时间段已被预约');
+    this.name = 'SlotTakenError';
+  }
+}
 
 router.post('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -36,7 +44,21 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: '该时间段已被预约' });
     }
 
+    if (isSlotInPast(schedule.date, schedule.startTime)) {
+      return res.status(400).json({ error: '该时间段已过，无法预约' });
+    }
+
     const appointment = await prisma.$transaction(async (tx) => {
+      // 条件更新作为并发锁：只有仍可约的时段能被抢占成功
+      const locked = await tx.schedule.updateMany({
+        where: { id: validated.scheduleId, isAvailable: true },
+        data: { isAvailable: false }
+      });
+
+      if (locked.count === 0) {
+        throw new SlotTakenError();
+      }
+
       const newAppointment = await tx.appointment.create({
         data: {
           clientId,
@@ -61,11 +83,6 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
         }
       });
 
-      await tx.schedule.update({
-        where: { id: validated.scheduleId },
-        data: { isAvailable: false }
-      });
-
       return newAppointment;
     });
 
@@ -84,6 +101,9 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
       appointment
     });
   } catch (error) {
+    if (error instanceof SlotTakenError) {
+      return res.status(400).json({ error: error.message });
+    }
     if (error instanceof z.ZodError) {
       return sendValidationError(res, error);
     }

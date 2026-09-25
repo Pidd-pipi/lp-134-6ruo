@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, Link } from 'react-router-dom';
-import { userAPI } from '../services/api';
+import { userAPI, counselorAPI } from '../services/api';
 import { Appointment, Favorite, SupportGroup, Notification, Post } from '../types';
 import { useAuth } from '../context/AuthContext';
 
@@ -12,6 +12,7 @@ const ProfilePage: React.FC = () => {
   const [groups, setGroups] = useState<SupportGroup[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [myPosts, setMyPosts] = useState<Post[]>([]);
+  const [myCounselorProfile, setMyCounselorProfile] = useState<any>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -35,6 +36,17 @@ const ProfilePage: React.FC = () => {
       }
     };
     fetchData();
+  }, [user]);
+
+  useEffect(() => {
+    if (user?.role !== 'COUNSELOR') return;
+
+    counselorAPI.getApproved()
+      .then(res => {
+        const profile = (res.data as any[]).find(c => c.user?.id === user.id);
+        setMyCounselorProfile(profile ?? null);
+      })
+      .catch(() => setMyCounselorProfile(null));
   }, [user]);
 
   if (isLoading) {
@@ -97,6 +109,14 @@ const ProfilePage: React.FC = () => {
                 </span>
               )}
             </div>
+            {user.role === 'COUNSELOR' && myCounselorProfile && (
+              <Link
+                to={`/counselors/${myCounselorProfile.id}`}
+                className="inline-block mt-3 text-primary-600 hover:underline text-sm"
+              >
+                📅 管理我的排班与休诊
+              </Link>
+            )}
           </div>
         </div>
       </div>

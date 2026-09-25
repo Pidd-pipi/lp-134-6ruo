@@ -90,8 +90,10 @@ model CounselorProfile {
   
   user            User            @relation(fields: [userId], references: [id])
   schedules       Schedule[]
+  weeklySchedules WeeklySchedule[]
+  dayOffs         DayOff[]
   tags            CounselorTag[]
-  
+
   @@map("counselor_profiles")
 }
 
@@ -176,11 +178,41 @@ model Schedule {
   endTime         String
   isAvailable     Boolean         @default(true)
   createdAt       DateTime        @default(now())
-  
+
   counselor       CounselorProfile @relation(fields: [counselorId], references: [id])
   appointment     Appointment?
-  
+
+  @@unique([counselorId, date, startTime, endTime])
+  @@index([counselorId, date])
   @@map("schedules")
+}
+
+model WeeklySchedule {
+  id              String           @id @default(uuid())
+  counselorId     String
+  weekday         Int
+  startTime       String
+  endTime         String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  counselor       CounselorProfile @relation(fields: [counselorId], references: [id])
+
+  @@unique([counselorId, weekday, startTime, endTime])
+  @@map("weekly_schedules")
+}
+
+model DayOff {
+  id              String           @id @default(uuid())
+  counselorId     String
+  date            DateTime
+  reason          String?
+  createdAt       DateTime         @default(now())
+
+  counselor       CounselorProfile @relation(fields: [counselorId], references: [id])
+
+  @@unique([counselorId, date])
+  @@map("day_offs")
 }
 
 model Appointment {

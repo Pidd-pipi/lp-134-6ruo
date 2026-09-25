@@ -62,7 +62,14 @@ export const counselorAPI = {
   createSchedule: (data: { date: string; startTime: string; endTime: string }) =>
     api.post('/counselors/schedule', data),
   getSchedules: (id: string) => api.get(`/counselors/${id}/schedules`),
-  deleteSchedule: (id: string) => api.delete(`/counselors/schedule/${id}`)
+  deleteSchedule: (id: string) => api.delete(`/counselors/schedule/${id}`),
+  getWeeklySchedule: () => api.get('/counselors/weekly-schedule'),
+  saveWeeklySchedule: (data: { rules: { weekday: number; startTime: string; endTime: string }[] }) =>
+    api.post('/counselors/weekly-schedule', data),
+  deleteWeeklySchedule: (id: string) => api.delete(`/counselors/weekly-schedule/${id}`),
+  createDayOff: (data: { date: string; reason?: string }) =>
+    api.post('/counselors/day-offs', data),
+  deleteDayOff: (id: string) => api.delete(`/counselors/day-offs/${id}`)
 };
 
 export const appointmentAPI = {
