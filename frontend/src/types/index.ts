@@ -65,6 +65,14 @@ export interface Schedule {
   createdAt: string;
 }
 
+export interface MySchedule extends Schedule {
+  appointment: {
+    id: string;
+    status: 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED';
+    title: string;
+  } | null;
+}
+
 export interface Appointment {
   id: string;
   clientId: string;

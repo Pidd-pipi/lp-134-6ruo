@@ -21,10 +21,31 @@ const createScheduleSchema = z.object({
   endTime: z.string().min(1)
 });
 
+const weeklyScheduleSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, '时间格式应为 HH:mm'),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, '时间格式应为 HH:mm')
+});
+
+const dayOffSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
+});
+
 const reviewCounselorSchema = z.object({
   status: z.enum(['APPROVED', 'REJECTED']),
   rejectionReason: z.string().optional()
 });
+
+const startOfDay = (d: Date): Date => {
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+};
+
+const dayKey = (d: Date): string => {
+  const local = new Date(d);
+  return `${local.getFullYear()}-${local.getMonth()}-${local.getDate()}`;
+};
 
 router.post('/apply', authMiddleware, requireRole(['USER']), async (req: AuthRequest, res) => {
   try {
@@ -212,7 +233,7 @@ router.get('/:id', async (req, res) => {
         schedules: {
           where: {
             date: {
-              gte: new Date()
+              gte: startOfDay(new Date())
             },
             isAvailable: true
           },
@@ -266,6 +287,175 @@ router.post('/schedule', authMiddleware, requireRole(['COUNSELOR']), async (req:
   }
 });
 
+router.post('/schedule/weekly', authMiddleware, requireRole(['COUNSELOR']), async (req: AuthRequest, res) => {
+  try {
+    const validated = weeklyScheduleSchema.parse(req.body);
+    const userId = req.user!.id;
+
+    if (validated.startTime >= validated.endTime) {
+      return res.status(400).json({ error: '开始时间必须早于结束时间' });
+    }
+
+    const counselor = await prisma.counselorProfile.findUnique({
+      where: { userId }
+    });
+
+    if (!counselor || counselor.status !== 'APPROVED') {
+      return res.status(403).json({ error: '您不是认证咨询师' });
+    }
+
+    const today = startOfDay(new Date());
+    const windowEnd = new Date(today);
+    windowEnd.setDate(windowEnd.getDate() + 14);
+
+    const targetDates: Date[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() + i);
+      if (d.getDay() === validated.dayOfWeek) {
+        targetDates.push(d);
+      }
+    }
+
+    const existing = await prisma.schedule.findMany({
+      where: {
+        counselorId: counselor.id,
+        date: { gte: today, lt: windowEnd }
+      },
+      select: { date: true, startTime: true, endTime: true }
+    });
+
+    const existingKeys = new Set(
+      existing.map(s => `${dayKey(s.date)}|${s.startTime}|${s.endTime}`)
+    );
+
+    const toCreate = targetDates.filter(
+      d => !existingKeys.has(`${dayKey(d)}|${validated.startTime}|${validated.endTime}`)
+    );
+
+    if (toCreate.length > 0) {
+      await prisma.schedule.createMany({
+        data: toCreate.map(d => ({
+          counselorId: counselor.id,
+          date: d,
+          startTime: validated.startTime,
+          endTime: validated.endTime,
+          isAvailable: true
+        }))
+      });
+    }
+
+    res.json({
+      message: `每周排班已保存：新增 ${toCreate.length} 个空闲时段，${targetDates.length - toCreate.length} 个已存在跳过`,
+      created: toCreate.length,
+      skipped: targetDates.length - toCreate.length
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return sendValidationError(res, error);
+    }
+    sendInternalError(res, error, '保存每周排班错误', '保存每周排班失败');
+  }
+});
+
+router.post('/schedule/day-off', authMiddleware, requireRole(['COUNSELOR']), async (req: AuthRequest, res) => {
+  try {
+    const validated = dayOffSchema.parse(req.body);
+    const userId = req.user!.id;
+
+    const counselor = await prisma.counselorProfile.findUnique({
+      where: { userId }
+    });
+
+    if (!counselor || counselor.status !== 'APPROVED') {
+      return res.status(403).json({ error: '您不是认证咨询师' });
+    }
+
+    const [year, month, day] = validated.date.split('-').map(Number);
+    const dayStart = new Date(year, month - 1, day);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+
+    const schedules = await prisma.schedule.findMany({
+      where: {
+        counselorId: counselor.id,
+        date: { gte: dayStart, lt: dayEnd }
+      },
+      include: {
+        appointment: {
+          select: { id: true, status: true, title: true }
+        }
+      }
+    });
+
+    const conflicts = schedules.filter(
+      s => s.appointment && ['PENDING', 'CONFIRMED'].includes(s.appointment.status)
+    );
+
+    if (conflicts.length > 0) {
+      return res.status(400).json({
+        error: `该日期已有 ${conflicts.length} 个进行中的预约，无法设为休诊`,
+        conflicts: conflicts.map(s => ({
+          date: validated.date,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          title: s.appointment!.title,
+          status: s.appointment!.status
+        }))
+      });
+    }
+
+    const removableIds = schedules.filter(s => !s.appointment).map(s => s.id);
+    const closableIds = schedules.filter(s => s.appointment && s.isAvailable).map(s => s.id);
+
+    await prisma.$transaction([
+      prisma.schedule.deleteMany({ where: { id: { in: removableIds } } }),
+      prisma.schedule.updateMany({ where: { id: { in: closableIds } }, data: { isAvailable: false } })
+    ]);
+
+    res.json({
+      message: `已设为休诊，撤下 ${removableIds.length + closableIds.length} 个空闲时段，其他日期不受影响`,
+      removed: removableIds.length + closableIds.length
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return sendValidationError(res, error);
+    }
+    sendInternalError(res, error, '设置休诊错误', '设置休诊失败');
+  }
+});
+
+router.get('/my/schedules', authMiddleware, requireRole(['COUNSELOR']), async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+
+    const counselor = await prisma.counselorProfile.findUnique({
+      where: { userId }
+    });
+
+    if (!counselor) {
+      return res.status(403).json({ error: '您不是认证咨询师' });
+    }
+
+    const schedules = await prisma.schedule.findMany({
+      where: {
+        counselorId: counselor.id,
+        date: { gte: startOfDay(new Date()) }
+      },
+      include: {
+        appointment: {
+          select: { id: true, status: true, title: true }
+        }
+      },
+      orderBy: [{ date: 'asc' }, { startTime: 'asc' }]
+    });
+
+    res.json(schedules);
+  } catch (error) {
+    sendInternalError(res, error, '获取我的排班错误', '获取我的排班失败');
+  }
+});
+
 router.get('/:id/schedules', async (req, res) => {
   try {
     const { id } = req.params;
@@ -274,7 +464,7 @@ router.get('/:id/schedules', async (req, res) => {
       where: {
         counselorId: id,
         date: {
-          gte: new Date()
+          gte: startOfDay(new Date())
         },
         isAvailable: true
       },
